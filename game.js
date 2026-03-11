@@ -136,12 +136,27 @@ class Entity {
         };
     }
 
+    isAtIntersection() {
+        // Use tolerance to allow for non-integer step speeds
+        const tolerance = this.speed;
+        return (this.x % TILE_SIZE < tolerance || this.x % TILE_SIZE > TILE_SIZE - tolerance) &&
+               (this.y % TILE_SIZE < tolerance || this.y % TILE_SIZE > TILE_SIZE - tolerance);
+    }
+
+    snapToGrid() {
+        this.x = Math.round(this.x / TILE_SIZE) * TILE_SIZE;
+        this.y = Math.round(this.y / TILE_SIZE) * TILE_SIZE;
+    }
+
     canMove(dx, dy) {
         if (dx === 0 && dy === 0) return true;
-        const nextCol = Math.floor((this.x + dx * this.speed + (dx > 0 ? TILE_SIZE - 1 : 0)) / TILE_SIZE);
-        const nextRow = Math.floor((this.y + dy * this.speed + (dy > 0 ? TILE_SIZE - 1 : 0)) / TILE_SIZE);
         
-        if (nextCol < 0 || nextCol >= COLS) return true;
+        // Calculate next tile position based on current grid center
+        const gridPos = this.getGridPos();
+        const nextCol = gridPos.col + dx;
+        const nextRow = gridPos.row + dy;
+        
+        if (nextCol < 0 || nextCol >= COLS) return true; // Horizontal wrap paths
         if (nextRow < 0 || nextRow >= ROWS) return false;
 
         const tile = maze[nextRow][nextCol];
@@ -149,29 +164,34 @@ class Entity {
     }
 
     move() {
-        if (this.x % TILE_SIZE === 0 && this.y % TILE_SIZE === 0) {
+        if (this.isAtIntersection()) {
             if (this.canMove(this.targetDirX, this.targetDirY)) {
+                // Change direction and snap to grid to stay aligned
+                if (this.dirX !== this.targetDirX || this.dirY !== this.targetDirY) {
+                    this.snapToGrid();
+                }
                 this.dirX = this.targetDirX;
                 this.dirY = this.targetDirY;
+            } else if (!this.canMove(this.dirX, this.dirY)) {
+                // Stop at wall and snap
+                this.snapToGrid();
+                this.dirX = 0;
+                this.dirY = 0;
             }
         }
 
-        if (this.canMove(this.dirX, this.dirY)) {
-            this.x += this.dirX * this.speed;
-            this.y += this.dirY * this.speed;
-        } else {
-            this.dirX = 0;
-            this.dirY = 0;
-        }
+        this.x += this.dirX * this.speed;
+        this.y += this.dirY * this.speed;
 
-        if (this.x < -TILE_SIZE/2) this.x = COLS * TILE_SIZE - TILE_SIZE/2;
-        if (this.x > COLS * TILE_SIZE - TILE_SIZE/2) this.x = -TILE_SIZE/2;
+        // Horizontal wrap around
+        if (this.x < -TILE_SIZE) this.x = (COLS - 1) * TILE_SIZE;
+        if (this.x > COLS * TILE_SIZE) this.x = 0;
     }
 }
 
 class Player extends Entity {
     constructor(x, y) {
-        super(x, y, 2.5);
+        super(x, y, 2); // Integer speed to avoid precision issues
     }
 
     update() {
@@ -200,7 +220,6 @@ class Player extends Entity {
     }
 
     draw() {
-        // Subtle glow effect
         if (powerUpTimer > 0) {
             ctx.shadowBlur = 15;
             ctx.shadowColor = 'gold';
@@ -212,16 +231,15 @@ class Player extends Entity {
 
 class Police extends Entity {
     constructor(x, y, type) {
-        super(x, y, 1.8);
+        super(x, y, 2); // Integer speed
         this.type = type;
         this.frightened = false;
-        this.timer = 0;
     }
 
     update() {
         this.frightened = powerUpTimer > 0;
         
-        if (this.x % TILE_SIZE === 0 && this.y % TILE_SIZE === 0) {
+        if (this.isAtIntersection()) {
             this.chooseDirection();
         }
 
@@ -246,12 +264,10 @@ class Police extends Entity {
             return;
         }
 
-        let bestMove = validMoves[0];
-        let minDist = Infinity;
+        // Behavior logic
         let targetX = player.x;
         let targetY = player.y;
 
-        // Frightened behavior
         if (this.frightened) {
             const randomMove = validMoves[Math.floor(Math.random() * validMoves.length)];
             this.targetDirX = randomMove.dx;
@@ -259,39 +275,34 @@ class Police extends Entity {
             return;
         }
 
-        // Distinct Personalities
         switch(this.type) {
-            case 'CHASE': // Shadow: Direct chase
+            case 'CHASE':
                 targetX = player.x;
                 targetY = player.y;
                 break;
-            case 'AMBUSH': // Sneaky: 4 tiles ahead
-                targetX = player.x + player.dirX * TILE_SIZE * 4;
-                targetY = player.y + player.dirY * TILE_SIZE * 4;
+            case 'AMBUSH':
+                targetX = player.x + (player.dirX || 0) * TILE_SIZE * 4;
+                targetY = player.y + (player.dirY || 0) * TILE_SIZE * 4;
                 break;
-            case 'FLANK': // Cutter: Combined vector
+            case 'FLANK':
                 const chaseGhost = enemies[0];
-                const vecX = (player.x + player.dirX * TILE_SIZE * 2) - chaseGhost.x;
-                const vecY = (player.y + player.dirY * TILE_SIZE * 2) - chaseGhost.y;
+                const vecX = (player.x + (player.dirX || 0) * TILE_SIZE * 2) - chaseGhost.x;
+                const vecY = (player.y + (player.dirY || 0) * TILE_SIZE * 2) - chaseGhost.y;
                 targetX = chaseGhost.x + vecX * 2;
                 targetY = chaseGhost.y + vecY * 2;
                 break;
-            case 'RANDOM': // Erratic
-                if (Math.random() > 0.8) {
-                    targetX = player.x;
-                    targetY = player.y;
-                } else {
-                    const rMove = validMoves[Math.floor(Math.random() * validMoves.length)];
-                    this.targetDirX = rMove.dx;
-                    this.targetDirY = rMove.dy;
-                    return;
-                }
-                break;
+            case 'RANDOM':
+                const rMove = validMoves[Math.floor(Math.random() * validMoves.length)];
+                this.targetDirX = rMove.dx;
+                this.targetDirY = rMove.dy;
+                return;
         }
 
+        let bestMove = validMoves[0];
+        let minDist = Infinity;
         validMoves.forEach(m => {
-            const nextX = this.x + m.dx * TILE_SIZE;
-            const nextY = this.y + m.dy * TILE_SIZE;
+            const nextX = (Math.round(this.x/TILE_SIZE) + m.dx) * TILE_SIZE;
+            const nextY = (Math.round(this.y/TILE_SIZE) + m.dy) * TILE_SIZE;
             const dist = Math.sqrt((nextX - targetX)**2 + (nextY - targetY)**2);
             if (dist < minDist) {
                 minDist = dist;
@@ -325,19 +336,17 @@ class Police extends Entity {
         this.y = this.startY * TILE_SIZE;
         this.dirX = 0;
         this.dirY = 0;
+        this.targetDirX = 0;
+        this.targetDirY = 0;
     }
 
     draw() {
         ctx.save();
         if (this.frightened) {
             ctx.filter = 'hue-rotate(180deg) brightness(1.5)';
-            // Flicker at end of powerup
-            if (powerUpTimer < 120 && powerUpTimer % 20 < 10) {
-                ctx.filter = 'none';
-            }
+            if (powerUpTimer < 120 && powerUpTimer % 20 < 10) ctx.filter = 'none';
         } else {
-            // Neon red/blue siren flicker
-            const flicker = Math.floor(Date.now() / 100) % 2 === 0;
+            const flicker = Math.floor(Date.now() / 150) % 2 === 0;
             ctx.shadowBlur = 10;
             ctx.shadowColor = flicker ? '#ff0000' : '#0000ff';
         }
@@ -442,12 +451,11 @@ window.addEventListener('keydown', (e) => {
 
 restartBtn.addEventListener('click', restartGame);
 
-// Loop Principal
 function draw() {
     ctx.fillStyle = '#05050a';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Grid visual sutil
+    // Subtle grid
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
     ctx.lineWidth = 1;
     for(let i=0; i<COLS; i++) {
@@ -457,7 +465,6 @@ function draw() {
         ctx.beginPath(); ctx.moveTo(0, i*TILE_SIZE); ctx.lineTo(canvas.width, i*TILE_SIZE); ctx.stroke();
     }
 
-    // Desenhar Labirinto
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
             const tile = maze[r][c];
@@ -473,7 +480,6 @@ function draw() {
             } else if (tile === 2) {
                 ctx.drawImage(sprites.money, px + 8, py + 8, 16, 16);
             } else if (tile === 3) {
-                // Pulsing diamond
                 const scale = 1 + Math.sin(Date.now() / 200) * 0.1;
                 const size = 24 * scale;
                 ctx.drawImage(sprites.diamond, px + (TILE_SIZE - size)/2, py + (TILE_SIZE - size)/2, size, size);
@@ -484,10 +490,7 @@ function draw() {
     if (gameState === 'PLAYING') {
         player.update();
         enemies.forEach(e => e.update());
-        
-        if (powerUpTimer > 0) {
-            powerUpTimer--;
-        }
+        if (powerUpTimer > 0) powerUpTimer--;
     }
 
     enemies.forEach(e => e.draw());
@@ -496,7 +499,6 @@ function draw() {
     requestAnimationFrame(draw);
 }
 
-// Iniciar
 updateHUD();
 overlay.classList.remove('hidden');
 overlayTitle.textContent = 'CITY CHASE';
